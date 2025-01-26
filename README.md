@@ -9,7 +9,7 @@ Further, the shared approach in BTC and ETH address generation makes the code fa
 A consumer-grade laptop is capable of comfortably checking ~100M addresses a second without impacting its primary use.
 
 This makes participating in the Crypto Lottery free for people like me - the ones living in Canada in a home with electric heating. Some of the heating happens through the GPU instead
-of the baseboard heater, but I'd pay for that heating electricity.This quirk makes participating in Crypto Lottery to make economic sense, even though the chance of "winning"
+of the baseboard heater, but I'd have to pay for that heating electricity anyway. Tnis quirk makes participating in Crypto Lottery to make economic sense, even though the chance of "winning"
 is still lower than the traditional lotteries offer. Simply because traditional lotteries are not free.
 
 ## The way the code works
@@ -35,6 +35,7 @@ I am pretty sure I am not the first one to write such a lottery. If you want to 
 ## Prerequisites
 - GNU Make (version 4.0 or higher)
 - GCC (GNU Compiler Collection) or any other compatible compiler
+- CUDA compiler
 
 ## Building the Project
 To build the project, simply run:
