@@ -3,87 +3,31 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <device_launch_parameters.h>
 #include <string.h>
 
 
 #define RIPEMD160_BLOCK_LENGTH 64
 #define RIPEMD160_DIGEST_LENGTH 20
 
-typedef struct _RIPEMD160_CTX {
-  uint32_t total[2];                      /*!< number of bytes processed  */
-  uint32_t state[5];                      /*!< intermediate digest state  */
-  uint8_t buffer[RIPEMD160_BLOCK_LENGTH]; /*!< data block being processed */
-} RIPEMD160_CTX;
-
 /*
  * 32-bit integer manipulation macros (little endian)
+ * CUDA is little-endian, we do not need the bitshift conversion
  */
-#ifndef GET_UINT32_LE
-#define GET_UINT32_LE(n,b,i)                            \
-{                                                       \
-    (n) = ( (uint32_t) (b)[(i)    ]       )             \
-        | ( (uint32_t) (b)[(i) + 1] <<  8 )             \
-        | ( (uint32_t) (b)[(i) + 2] << 16 )             \
-        | ( (uint32_t) (b)[(i) + 3] << 24 );            \
-}
-#endif
 
-#ifndef PUT_UINT32_LE
-#define PUT_UINT32_LE(n,b,i)                                    \
-{                                                               \
-    (b)[(i)    ] = (uint8_t) ( ( (n)       ) & 0xFF );    \
-    (b)[(i) + 1] = (uint8_t) ( ( (n) >>  8 ) & 0xFF );    \
-    (b)[(i) + 2] = (uint8_t) ( ( (n) >> 16 ) & 0xFF );    \
-    (b)[(i) + 3] = (uint8_t) ( ( (n) >> 24 ) & 0xFF );    \
-}
-#endif
-
-/*
- * RIPEMD-160 context setup
- */
-__device__ void ripemd160_Init(RIPEMD160_CTX *ctx)
-{
-    // memzero(ctx, sizeof(RIPEMD160_CTX));
-    ctx->total[0] = 0;
-    ctx->total[1] = 0;
-    ctx->state[0] = 0x67452301;
-    ctx->state[1] = 0xEFCDAB89;
-    ctx->state[2] = 0x98BADCFE;
-    ctx->state[3] = 0x10325476;
-    ctx->state[4] = 0xC3D2E1F0;
-}
-
-#if !defined(MBEDTLS_RIPEMD160_PROCESS_ALT)
 /*
  * Process one block
  */
-__device__ void ripemd160_process( RIPEMD160_CTX *ctx, const uint8_t data[RIPEMD160_BLOCK_LENGTH] )
+__device__ inline void ripemd160_process( uint32_t *state, const uint8_t data[RIPEMD160_BLOCK_LENGTH] )
 {
-    uint32_t A, B, C, D, E, Ap, Bp, Cp, Dp, Ep, X[16];
+    uint32_t A, B, C, D, E, Ap, Bp, Cp, Dp, Ep;
 
-    GET_UINT32_LE( X[ 0], data,  0 );
-    GET_UINT32_LE( X[ 1], data,  4 );
-    GET_UINT32_LE( X[ 2], data,  8 );
-    GET_UINT32_LE( X[ 3], data, 12 );
-    GET_UINT32_LE( X[ 4], data, 16 );
-    GET_UINT32_LE( X[ 5], data, 20 );
-    GET_UINT32_LE( X[ 6], data, 24 );
-    GET_UINT32_LE( X[ 7], data, 28 );
-    GET_UINT32_LE( X[ 8], data, 32 );
-    GET_UINT32_LE( X[ 9], data, 36 );
-    GET_UINT32_LE( X[10], data, 40 );
-    GET_UINT32_LE( X[11], data, 44 );
-    GET_UINT32_LE( X[12], data, 48 );
-    GET_UINT32_LE( X[13], data, 52 );
-    GET_UINT32_LE( X[14], data, 56 );
-    GET_UINT32_LE( X[15], data, 60 );
+    uint32_t *X = (uint32_t *)data;
 
-    A = Ap = ctx->state[0];
-    B = Bp = ctx->state[1];
-    C = Cp = ctx->state[2];
-    D = Dp = ctx->state[3];
-    E = Ep = ctx->state[4];
+    A = Ap = state[0];
+    B = Bp = state[1];
+    C = Cp = state[2];
+    D = Dp = state[3];
+    E = Ep = state[4];
 
 #define F1( x, y, z )   ( x ^ y ^ z )
 #define F2( x, y, z )   ( ( x & y ) | ( ~x & z ) )
@@ -227,105 +171,33 @@ __device__ void ripemd160_process( RIPEMD160_CTX *ctx, const uint8_t data[RIPEMD
 #undef Fp
 #undef Kp
 
-    C             = ctx->state[1] + C + Dp;
-    ctx->state[1] = ctx->state[2] + D + Ep;
-    ctx->state[2] = ctx->state[3] + E + Ap;
-    ctx->state[3] = ctx->state[4] + A + Bp;
-    ctx->state[4] = ctx->state[0] + B + Cp;
-    ctx->state[0] = C;
-}
-#endif /* !MBEDTLS_RIPEMD160_PROCESS_ALT */
-
-/*
- * RIPEMD-160 process buffer
- */
-__device__ void ripemd160_Update( RIPEMD160_CTX *ctx, const uint8_t *input, uint32_t ilen )
-{
-    uint32_t fill;
-    uint32_t left;
-
-    if( ilen == 0 )
-        return;
-
-    left = ctx->total[0] & 0x3F;
-    fill = RIPEMD160_BLOCK_LENGTH - left;
-
-    ctx->total[0] += (uint32_t) ilen;
-    ctx->total[0] &= 0xFFFFFFFF;
-
-    if( ctx->total[0] < (uint32_t) ilen )
-        ctx->total[1]++;
-
-    if( left && ilen >= fill )
-    {
-        memcpy( (void *) (ctx->buffer + left), input, fill );
-        ripemd160_process( ctx, ctx->buffer );
-        input += fill;
-        ilen  -= fill;
-        left = 0;
-    }
-
-    while( ilen >= RIPEMD160_BLOCK_LENGTH )
-    {
-        ripemd160_process( ctx, input );
-        input += RIPEMD160_BLOCK_LENGTH;
-        ilen  -= RIPEMD160_BLOCK_LENGTH;
-    }
-
-    if( ilen > 0 )
-    {
-        memcpy( (void *) (ctx->buffer + left), input, ilen );
-    }
+    C        = state[1] + C + Dp;
+    state[1] = state[2] + D + Ep;
+    state[2] = state[3] + E + Ap;
+    state[3] = state[4] + A + Bp;
+    state[4] = state[0] + B + Cp;
+    state[0] = C;
 }
 
-__device__ static const uint8_t ripemd160_padding[RIPEMD160_BLOCK_LENGTH] =
+// Padding with the embedded length of 32 bytes (there is a 1 in the sea of 0s)
+__device__ static const uint8_t ripemd160_padding[32] =
 {
  0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0
 };
 
-/*
- * RIPEMD-160 final digest
- */
-__device__ void ripemd160_Final( RIPEMD160_CTX *ctx, uint8_t output[RIPEMD160_DIGEST_LENGTH] )
-{
-    uint32_t last, padn;
-    uint32_t high, low;
-    uint8_t msglen[8];
-
-    high = ( ctx->total[0] >> 29 )
-         | ( ctx->total[1] <<  3 );
-    low  = ( ctx->total[0] <<  3 );
-
-    PUT_UINT32_LE( low,  msglen, 0 );
-    PUT_UINT32_LE( high, msglen, 4 );
-
-    last = ctx->total[0] & 0x3F;
-    padn = ( last < 56 ) ? ( 56 - last ) : ( 120 - last );
-
-    ripemd160_Update( ctx, ripemd160_padding, padn );
-    ripemd160_Update( ctx, msglen, 8 );
-
-    PUT_UINT32_LE( ctx->state[0], output,  0 );
-    PUT_UINT32_LE( ctx->state[1], output,  4 );
-    PUT_UINT32_LE( ctx->state[2], output,  8 );
-    PUT_UINT32_LE( ctx->state[3], output, 12 );
-    PUT_UINT32_LE( ctx->state[4], output, 16 );
-
-    // memzero(ctx, sizeof(RIPEMD160_CTX));
-}
 
 /*
  * output = RIPEMD-160( input buffer )
  */
-__device__ void ripemd160(const uint8_t *msg, uint32_t msg_len, uint8_t hash[RIPEMD160_DIGEST_LENGTH])
+__device__ void ripemd160(const uint8_t msg[32], uint8_t hash[RIPEMD160_DIGEST_LENGTH])
 {
-    RIPEMD160_CTX ctx;
-    ripemd160_Init( &ctx );
-    ripemd160_Update( &ctx, msg, msg_len );
-    ripemd160_Final( &ctx, hash );
+    uint32_t state[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
+    uint8_t buffer[RIPEMD160_BLOCK_LENGTH];
+    memcpy( (void *) (buffer), msg, 32);
+    memcpy( (void *) (buffer + 32), ripemd160_padding, 32);
+    ripemd160_process( state, buffer );
+    memcpy( (void *) (hash), state, 64);
 }
 
 #endif

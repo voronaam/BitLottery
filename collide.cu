@@ -82,7 +82,7 @@ __global__ void incKernel(lottery_ticket *g_idata, lottery_ticket *g_odata) {
         dev_fe_impl_get_b32(serialized_pubkey + 33, &g_idata[index].p.y);
 
         sha256(hash1, serialized_pubkey); // Hash first 33 bytes
-        ripemd160(hash1, 32, hash2); // hash2 is the BTC target now
+        ripemd160(hash1, hash2); // hash2 is the BTC target now
 
         Keccak256_getHash(serialized_pubkey + 1, 64, hash3); // last 20 bytes of hash3 is the ETH target now
 
