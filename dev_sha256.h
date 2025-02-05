@@ -4,24 +4,6 @@
 
 #include <cuda_runtime.h>
 
-typedef struct {
-    uint32_t s[8];
-    unsigned char buf[64];
-    uint64_t bytes;
-} rustsecp256k1_v0_10_0_sha256;
-
-__device__ static void dev_sha256_initialize(rustsecp256k1_v0_10_0_sha256 *hash) {
-    hash->s[0] = 0x6a09e667ul;
-    hash->s[1] = 0xbb67ae85ul;
-    hash->s[2] = 0x3c6ef372ul;
-    hash->s[3] = 0xa54ff53aul;
-    hash->s[4] = 0x510e527ful;
-    hash->s[5] = 0x9b05688cul;
-    hash->s[6] = 0x1f83d9abul;
-    hash->s[7] = 0x5be0cd19ul;
-    hash->bytes = 0;
-}
-
 __device__ inline static uint32_t dev_read_be32(const unsigned char* p) {
     return (uint32_t)p[0] << 24 |
            (uint32_t)p[1] << 16 |
@@ -36,15 +18,16 @@ __device__ inline static uint32_t dev_read_be32(const unsigned char* p) {
 #define sigma0(x) (((x) >> 7 | (x) << 25) ^ ((x) >> 18 | (x) << 14) ^ ((x) >> 3))
 #define sigma1(x) (((x) >> 17 | (x) << 15) ^ ((x) >> 19 | (x) << 13) ^ ((x) >> 10))
 
-#define Round(a,b,c,d,e,f,g,h,k,w) do { \
+#define Round(a,b,c,d,e,f,g,h,k,w)  { \
     uint32_t t1 = (h) + Sigma1(e) + Ch((e), (f), (g)) + (k) + (w); \
     uint32_t t2 = Sigma0(a) + Maj((a), (b), (c)); \
     (d) += t1; \
     (h) = t1 + t2; \
-} while(0)
+}
 
 
 __device__ static void dev_sha256_transform(uint32_t* s, const unsigned char* buf) {
+
     uint32_t a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];
     uint32_t w0, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15;
 
@@ -57,13 +40,13 @@ __device__ static void dev_sha256_transform(uint32_t* s, const unsigned char* bu
     Round(c, d, e, f, g, h, a, b, 0x923f82a4,  w6 = dev_read_be32(&buf[24]));
     Round(b, c, d, e, f, g, h, a, 0xab1c5ed5,  w7 = dev_read_be32(&buf[28]));
     Round(a, b, c, d, e, f, g, h, 0xd807aa98,  w8 = dev_read_be32(&buf[32]));
-    Round(h, a, b, c, d, e, f, g, 0x12835b01,  w9 = dev_read_be32(&buf[36]));
-    Round(g, h, a, b, c, d, e, f, 0x243185be, w10 = dev_read_be32(&buf[40]));
-    Round(f, g, h, a, b, c, d, e, 0x550c7dc3, w11 = dev_read_be32(&buf[44]));
-    Round(e, f, g, h, a, b, c, d, 0x72be5d74, w12 = dev_read_be32(&buf[48]));
-    Round(d, e, f, g, h, a, b, c, 0x80deb1fe, w13 = dev_read_be32(&buf[52]));
-    Round(c, d, e, f, g, h, a, b, 0x9bdc06a7, w14 = dev_read_be32(&buf[56]));
-    Round(b, c, d, e, f, g, h, a, 0xc19bf174, w15 = dev_read_be32(&buf[60]));
+    Round(h, a, b, c, d, e, f, g, 0x12835b01,  w9 = 0);
+    Round(g, h, a, b, c, d, e, f, 0x243185be, w10 = 0);
+    Round(f, g, h, a, b, c, d, e, 0x550c7dc3, w11 = 0);
+    Round(e, f, g, h, a, b, c, d, 0x72be5d74, w12 = 0);
+    Round(d, e, f, g, h, a, b, c, 0x80deb1fe, w13 = 0);
+    Round(c, d, e, f, g, h, a, b, 0x9bdc06a7, w14 = 0);
+    Round(b, c, d, e, f, g, h, a, 0xc19bf174, w15 = 0x108);
 
     Round(a, b, c, d, e, f, g, h, 0xe49b69c1, w0 += sigma1(w14) + w9 + sigma0(w1));
     Round(h, a, b, c, d, e, f, g, 0xefbe4786, w1 += sigma1(w15) + w10 + sigma0(w2));
@@ -126,24 +109,6 @@ __device__ static void dev_sha256_transform(uint32_t* s, const unsigned char* bu
     s[7] += h;
 }
 
-__device__ static void dev_sha256_write(rustsecp256k1_v0_10_0_sha256 *hash, const unsigned char *data, size_t len) {
-    size_t bufsize = hash->bytes & 0x3F;
-    hash->bytes += len;
-    while (len >= 64 - bufsize) {
-        /* Fill the buffer, and process it. */
-        size_t chunk_len = 64 - bufsize;
-        memcpy(hash->buf + bufsize, data, chunk_len);
-        data += chunk_len;
-        len -= chunk_len;
-        dev_sha256_transform(hash->s, hash->buf);
-        bufsize = 0;
-    }
-    if (len) {
-        /* Fill the buffer with what remains. */
-        memcpy(hash->buf + bufsize, data, len);
-    }
-}
-
 __device__ inline static void dev_write_be32(unsigned char* p, uint32_t x) {
     p[3] = x;
     p[2] = x >>  8;
@@ -151,27 +116,20 @@ __device__ inline static void dev_write_be32(unsigned char* p, uint32_t x) {
     p[0] = x >> 24;
 }
 
-__device__ static void dev_sha256_finalize(rustsecp256k1_v0_10_0_sha256 *hash, unsigned char *out32) {
-    static const unsigned char pad[64] = {0x80};
-    unsigned char sizedesc[8];
+__device__ static void sha256(unsigned char *out, const unsigned char *input) {
+    uint32_t s[8] = {0x6a09e667ul, 0xbb67ae85ul, 0x3c6ef372ul, 0xa54ff53aul, 0x510e527ful, 0x9b05688cul, 0x1f83d9abul, 0x5be0cd19ul};
+    unsigned char buf[64] = {0};
+    memcpy(buf, input, 33);
+    buf[33] = 0x80;
+
+    dev_sha256_transform(s, buf);
+
     int i;
-    /* The maximum message size of SHA256 is 2^64-1 bits. */
-    dev_write_be32(&sizedesc[0], hash->bytes >> 29);
-    dev_write_be32(&sizedesc[4], hash->bytes << 3);
-    dev_sha256_write(hash, pad, 1 + ((119 - (hash->bytes % 64)) % 64));
-    dev_sha256_write(hash, sizedesc, 8);
     #pragma unroll 8
     for (i = 0; i < 8; i++) {
-        dev_write_be32(&out32[4*i], hash->s[i]);
-        hash->s[i] = 0;
+        dev_write_be32(&out[4*i], s[i]);
     }
-}
 
-__device__ static void sha256(unsigned char *out, const unsigned char *input) {
-    rustsecp256k1_v0_10_0_sha256 hasher;
-    dev_sha256_initialize(&hasher);
-    dev_sha256_write(&hasher, input, 33);
-    dev_sha256_finalize(&hasher, out);
 }
 
 #endif // SHA_256_H
