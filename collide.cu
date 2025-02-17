@@ -12,14 +12,23 @@
 #include "secp256k1_preallocated.h"
 #include "group.h"
 #include "ripemd160.h"
-#include "dev_sha256.h"
 #include "dev_key.h"
 #include "keccak256.cu"
 #include "targets2.h"
 
+// #define DEBUG_MODE 1
+
+#ifndef DEBUG_MODE
 #define THREADS 32*6
 #define KERNEL_ITERATIONS 1000000
 #define HOST_ITERATIONS 1*1000 // 1 is about 6 min on a consumer grade laptop (Dell XPS)
+#endif
+
+#ifdef DEBUG_MODE
+#define THREADS 1
+#define HOST_ITERATIONS 1
+#define KERNEL_ITERATIONS 3
+#endif
 
 #define TICKETS THREADS*THREADS // Should be THREADS**2
 
@@ -69,9 +78,20 @@ typedef struct {
     uint64_t offset;
 } lottery_ticket;
 
+__device__ inline void print20(const char* message, unsigned char *hash) {
+    if (hash == NULL) {
+        return;
+    }
+    printf("%s", message);
+    for (int j = 0; j < 20; j++) {
+        printf("%02x", hash[j]);
+    }
+    printf("\n");
+}
+
 __global__ void incKernel(lottery_ticket *g_idata, lottery_ticket *g_odata) {
     int i;
-    unsigned char serialized_pubkey[65], hash1[32], hash2[20], hash3[32];
+    unsigned char serialized_pubkey[65], hash2[20], hash3[32];
     const unsigned int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     #pragma unroll 4
@@ -81,37 +101,33 @@ __global__ void incKernel(lottery_ticket *g_idata, lottery_ticket *g_odata) {
         // Make bytes 34-65 to be the y coordinate
         dev_fe_impl_get_b32(serialized_pubkey + 33, &g_idata[index].p.y);
 
-        sha256(hash1, serialized_pubkey); // Hash first 33 bytes
-        ripemd160(hash1, hash2); // hash2 is the BTC target now
+        sha256ripemd160(serialized_pubkey, hash2);
+
+        #ifdef DEBUG_MODE
+        for (int j = 0; j < 20; j++) {
+            printf("%02x", hash2[j]);
+        }
+        printf("\n");
+        #endif
 
         Keccak256_getHash(serialized_pubkey + 1, 64, hash3); // last 20 bytes of hash3 is the ETH target now
 
         unsigned char* btc = (unsigned char*) bsearch_dev (hash2, (unsigned char*)targets2btc, MAX_BTC_TARGETS2, 20);
         unsigned char* eth = (unsigned char*) bsearch_dev (hash3 + 12, (unsigned char*)targets2eth, MAX_ETH_TARGETS2, 20);
-        if (btc != NULL || eth != NULL) {
-            printf("Found a match! Offset from PK: %lx\n", g_idata[index].offset + i);
+        unsigned char* xdr = (unsigned char*) bsearch_dev (hash3 + 12, (unsigned char*)targets2xdr, MAX_XDR_TARGETS2, 20);
+        if (btc != NULL || eth != NULL || xdr != NULL) {
+            printf("Found a match! Offset from PK: %lx\nPK: ", g_idata[index].offset + i);
             for (int j = 0; j < 32; j++) {
                 printf("%02x", g_idata[index].seckey[j]);
             }
-            printf("\nPrinting the combined pubkey\n ±<...........................x..................................><............................y.................................>\n");
+            printf("\nPrinting the combined pubkey\n± <...........................x..................................><............................y.................................>\n");
             for (int j = 0; j < 65; j++) {
                 printf("%02x", serialized_pubkey[j]);
             }
             printf("\n");
-            if (btc != NULL) {
-                printf("BTC target: ");
-                for (int j = 0; j < 20; j++) {
-                    printf("%02x", btc[j]);
-                }
-                printf("\n");
-            }
-            if (eth != NULL) {
-                printf("ETH target: ");
-                for (int j = 0; j < 20; j++) {
-                    printf("%02x", eth[j]);
-                }
-                printf("\n");
-            }
+            print20("BTC target: ", btc);
+            print20("ETH target: ", eth);
+            print20("XDR target: ", xdr);
         }
     }
 

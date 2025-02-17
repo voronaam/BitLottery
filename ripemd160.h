@@ -4,6 +4,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <string.h>
+#include "dev_sha256.h"
 
 
 #define RIPEMD160_BLOCK_LENGTH 64
@@ -199,5 +200,27 @@ __device__ void ripemd160(const uint8_t msg[32], uint8_t hash[RIPEMD160_DIGEST_L
     ripemd160_process( state, buffer );
     memcpy( (void *) (hash), state, 64);
 }
+
+__device__ static void sha256ripemd160(const unsigned char *input, uint8_t hash[RIPEMD160_DIGEST_LENGTH]) {
+    uint32_t state[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
+    uint8_t buffer[RIPEMD160_BLOCK_LENGTH];
+    uint32_t s[8] = {0x6a09e667ul, 0xbb67ae85ul, 0x3c6ef372ul, 0xa54ff53aul, 0x510e527ful, 0x9b05688cul, 0x1f83d9abul, 0x5be0cd19ul};
+    unsigned char buf[64] = {0};
+    memcpy(buf, input, 33);
+    buf[33] = 0x80;
+
+    dev_sha256_transform(s, buf);
+
+    int i;
+    #pragma unroll 8
+    for (i = 0; i < 8; i++) {
+        dev_write_be32(&buffer[4*i], s[i]);
+    }
+
+    memcpy( (void *) (buffer + 32), ripemd160_padding, 32);
+    ripemd160_process( state, buffer );
+    memcpy( (void *) (hash), state, 64);
+}
+
 
 #endif
