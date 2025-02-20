@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 
 #include "helper_cuda.h"
+#include "CASerror.h"
 #include "helper_timer.h"
 #include "secp256k1.h"
 #include "secp256k1_preallocated.h"
@@ -21,7 +22,7 @@
 #ifndef DEBUG_MODE
 #define THREADS 32*6
 #define KERNEL_ITERATIONS 1000000
-#define HOST_ITERATIONS 1*1000 // 1 is about 6 min on a consumer grade laptop (Dell XPS)
+#define HOST_ITERATIONS 1*10
 #endif
 
 #ifdef DEBUG_MODE
@@ -44,7 +45,7 @@ __device__ static int inline compare_dir(const unsigned char *a, const unsigned 
     return 0;
 }
 
-// Just a regular binary search. From glibc.
+// Just a regular binary search. From glibc
 __device__ static unsigned char *bsearch_dev(const unsigned char *__key,
                                       const unsigned char *__base,
                                       size_t __nmemb, size_t __size) {
@@ -78,6 +79,12 @@ typedef struct {
     uint64_t offset;
 } lottery_ticket;
 
+struct WinnerMessage {
+    uint64_t offset;
+    unsigned char seckey[32];
+    unsigned char serialized_pubkey[65];
+};
+
 __device__ inline void print20(const char* message, unsigned char *hash) {
     if (hash == NULL) {
         return;
@@ -89,7 +96,7 @@ __device__ inline void print20(const char* message, unsigned char *hash) {
     printf("\n");
 }
 
-__global__ void incKernel(lottery_ticket *g_idata, lottery_ticket *g_odata) {
+__global__ void incKernel(lottery_ticket *g_idata, lottery_ticket *g_odata, CASError::MappedErrorType<WinnerMessage> device_winner_data) {
     int i;
     unsigned char serialized_pubkey[65], hash2[20], hash3[32];
     const unsigned int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -103,19 +110,22 @@ __global__ void incKernel(lottery_ticket *g_idata, lottery_ticket *g_odata) {
 
         sha256ripemd160(serialized_pubkey, hash2);
 
-        #ifdef DEBUG_MODE
-        for (int j = 0; j < 20; j++) {
-            printf("%02x", hash2[j]);
-        }
-        printf("\n");
-        #endif
-
         Keccak256_getHash(serialized_pubkey + 1, 64, hash3); // last 20 bytes of hash3 is the ETH target now
 
         unsigned char* btc = (unsigned char*) bsearch_dev (hash2, (unsigned char*)targets2btc, MAX_BTC_TARGETS2, 20);
         unsigned char* eth = (unsigned char*) bsearch_dev (hash3 + 12, (unsigned char*)targets2eth, MAX_ETH_TARGETS2, 20);
         unsigned char* xdr = (unsigned char*) bsearch_dev (hash3 + 12, (unsigned char*)targets2xdr, MAX_XDR_TARGETS2, 20);
         if (btc != NULL || eth != NULL || xdr != NULL) {
+            #ifndef DIRECT_PRINTF
+            report_first_error(device_winner_data, [&] (WinnerMessage &error){
+               error = WinnerMessage{
+                    .offset = g_idata[index].offset + i,
+                };
+                memcpy(error.seckey, g_idata[index].seckey, 32);
+                memcpy(error.serialized_pubkey, serialized_pubkey, 65);
+            });
+            #endif
+            #ifdef DIRECT_PRINTF
             printf("Found a match! Offset from PK: %lx\nPK: ", g_idata[index].offset + i);
             for (int j = 0; j < 32; j++) {
                 printf("%02x", g_idata[index].seckey[j]);
@@ -128,6 +138,7 @@ __global__ void incKernel(lottery_ticket *g_idata, lottery_ticket *g_odata) {
             print20("BTC target: ", btc);
             print20("ETH target: ", eth);
             print20("XDR target: ", xdr);
+            #endif
         }
     }
 
@@ -154,13 +165,28 @@ static void create_tickets(lottery_ticket *tickets) {
     free(ctx_mem);
 }
 
+void reportWinner( CASError::MappedErrorType<WinnerMessage> & error_dat) {
+   if (error_dat.checkErrorReported()) {
+        auto & winner = error_dat.get();
+        printf("Found a match! Offset from PK: %lx\nPK: ", winner.offset);
+        for (int j = 0; j < 32; j++) {
+            printf("%02x", winner.seckey[j]);
+        }
+        printf("\nPrinting the combined pubkey\n± <...........................x..................................><............................y.................................>\n");
+        for (int j = 0; j < 65; j++) {
+            printf("%02x", winner.serialized_pubkey[j]);
+        }
+        printf("\n");
+        error_dat.clear();
+   }
+}
+
 int main(int argc, char **argv) {
     lottery_ticket tickets[TICKETS] = { 0 };
     create_tickets(tickets);
 
     int devID = findCudaDevice(argc, (const char **)argv); // use command-line specified CUDA device, otherwise use device with highest Gflops/s
 
-    unsigned int num_threads = TICKETS;
     unsigned int mem_size = sizeof(lottery_ticket) * TICKETS;
     // allocate device memory
     lottery_ticket *d_idata;
@@ -171,15 +197,19 @@ int main(int argc, char **argv) {
     dim3 grid(THREADS);
     dim3 threads(THREADS);
 
+    auto mapped_winner = CASError::MappedErrorType<WinnerMessage>();
+    cudaStream_t stream; cudaStreamCreate(&stream);
+
     StopWatchInterface *timer = 0;
     sdkCreateTimer(&timer);
     sdkStartTimer(&timer);
 
     for (int k = 0; k < HOST_ITERATIONS; k++) {
         checkCudaErrors(cudaMemcpy(d_idata, &tickets, mem_size, cudaMemcpyHostToDevice));
-        incKernel<<<grid, threads, 0>>>(d_idata, d_odata);
+        incKernel<<<grid, threads, 0, stream>>>(d_idata, d_odata, mapped_winner);
         getLastCudaError("Kernel execution failed");
         checkCudaErrors(cudaMemcpy(&tickets, d_odata, mem_size, cudaMemcpyDeviceToHost));
+        reportWinner(mapped_winner);
     }
 
     sdkStopTimer(&timer);
