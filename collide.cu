@@ -114,7 +114,7 @@ __global__ void incKernel(lottery_ticket *g_idata, lottery_ticket *g_odata, CASE
 
         unsigned char* btc = (unsigned char*) bsearch_dev (hash2, (unsigned char*)targets2btc, MAX_BTC_TARGETS2, 20);
         unsigned char* eth = (unsigned char*) bsearch_dev (hash3 + 12, (unsigned char*)targets2eth, MAX_ETH_TARGETS2, 20);
-        unsigned char* xdr = (unsigned char*) bsearch_dev (hash3 + 12, (unsigned char*)targets2xdr, MAX_XDR_TARGETS2, 20);
+        unsigned char* xdr = (unsigned char*) bsearch_dev (hash2, (unsigned char*)targets2xdr, MAX_XDR_TARGETS2, 20);
         if (btc != NULL || eth != NULL || xdr != NULL) {
             #ifndef DIRECT_PRINTF
             report_first_error(device_winner_data, [&] (WinnerMessage &error){
